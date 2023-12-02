@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<search> 
+  
+  
+    
+    <entry>
+      <title>项目总结——工设一家（学成在线）</title>
+      <link href="/2023/12/02/Java/%E9%A1%B9%E7%9B%AE%E6%80%BB%E7%BB%93%E2%80%94%E2%80%94%E5%B7%A5%E8%AE%BE%E4%B8%80%E5%AE%B6%EF%BC%88%E5%AD%A6%E6%88%90%E5%9C%A8%E7%BA%BF%EF%BC%89/"/>
+      <url>/2023/12/02/Java/%E9%A1%B9%E7%9B%AE%E6%80%BB%E7%BB%93%E2%80%94%E2%80%94%E5%B7%A5%E8%AE%BE%E4%B8%80%E5%AE%B6%EF%BC%88%E5%AD%A6%E6%88%90%E5%9C%A8%E7%BA%BF%EF%BC%89/</url>
+      
+        <content type="html"><![CDATA[<h3 id="1-项目介绍"><a href="#1-项目介绍" class="headerlink" title="1. 项目介绍"></a>1. 项目介绍</h3><p>​是一个在线教育系统，网上教学平台，类似于智慧树，适用于学院的线上教学，老师在上面发布网课，同学们可以观看等等。</p><h3 id="2-系统架构"><a href="#2-系统架构" class="headerlink" title="2. 系统架构"></a>2. 系统架构</h3><p>​系统以微服务为技术架构，大致分为三大服务：系统服务，用户服务，内容服务。系统以Spring cloud Gateway作为网关，以nacos作为注册中心与配置中心，用Redis存储系统缓存与Token，Mysql作为数据库等等。</p><ul><li><p>系统服务：主要有词典与鉴权功能。</p><ul><li><p>词典存储着一些String信息，如图</p><p><img src="C:\Users\June\AppData\Roaming\Typora\typora-user-images\image-20231113154642944.png" alt="image-20231113154642944"></p><p>鉴权实现了用户校验与单点登录等功能。</p></li></ul></li><li><p>用户服务：主要有学生服务与教师服务</p></li><li><p>内容服务：主要分为课程服务与媒资服务</p><ul><li>课程服务：课程信息的crud等等<ul><li>针对课程发布信息实现了搜索功能，集成了ElasticSearch。</li></ul></li><li>媒资服务：管理课程关联的视频大文件。通过本地搭建的MinIO分布式文件系统（分了五个子文件夹，当作分布式），实现了视频大文件的断点续传与合并。</li></ul></li></ul><h3 id="3-细节实现"><a href="#3-细节实现" class="headerlink" title="3. 细节实现"></a>3. 细节实现</h3><h4 id="1-用户校验"><a href="#1-用户校验" class="headerlink" title="1. 用户校验"></a>1. 用户校验</h4><h4 id="2-单点登录"><a href="#2-单点登录" class="headerlink" title="2. 单点登录"></a>2. 单点登录</h4><h4 id="3-搜索功能"><a href="#3-搜索功能" class="headerlink" title="3. 搜索功能"></a>3. 搜索功能</h4><h4 id="4-MinIO"><a href="#4-MinIO" class="headerlink" title="4. MinIO"></a>4. MinIO</h4><h3 id="4-项目难点"><a href="#4-项目难点" class="headerlink" title="4. 项目难点"></a>4. 项目难点</h3><h4 id="1-缓存一致性"><a href="#1-缓存一致性" class="headerlink" title="1. 缓存一致性"></a>1. 缓存一致性</h4><p><strong>背景</strong>：在查询课程内容时，最开始采用的是直接查询数据库，但是发现不太好，所以加了一层缓存。这时候就存在一个缓存一致性问题。然后就有两种方案：1. <strong>先更新数据库，再删除缓存</strong>；2. <strong>先删除缓存，再更新数据库</strong>。</p><p>先说第一种方案，如果先更新数据库，可能在更新的时候，数据库或者服务宕机了，缓存没有被删除，这样会导致之前的旧数据还存在Redis里，造成脏数据，故而采用方案二。但是方案二也有问题，当有一个更新请求进来时，已经执行完删除缓存了，这时候来了一个查询的请求，查到缓存不存在，然后将Mysql里面还没更新的数据进行了缓存，这时候更新请求再接着继续，这样也会导致缓存了脏数据。</p><p>鉴于这种情况，我在网上查找了方案，发现可以采用延时双删的策略，就是先删除缓存，再更新数据库，然后业务休眠一段时间（我们根据业务实际情况，采用的是更新完数据库后，休眠500ms，使用Thread.sleep()），但是目前这种方案也有缺点，不能说每次更新的请求，都要用个500ms以上。</p><p>所以后续优化的话，我们在网上找到了几种方案，MQ和canal</p><ol><li><p><strong>MQ</strong></p><p>采用消息队列，当更新完数据库的时候，生产者发送消息到消息队列，Redis部分监听消息队列再进行删除操作。</p><p>但是这种方案会增加业务的复杂性，需要保证MQ的可靠性（生产者可靠性、消息队列持久化和稳定性、消费者可靠性、消息的幂等性等等），还需要再在业务代码里添加相应的生产者、消息队列、消费者等。</p></li><li><p><strong>canal</strong></p><p>cannal是阿里开发的中间件，把自己伪装成MySQL slave，模拟MySQL slave的交互协议向MySQL Mater发送 dump协议，MySQL mater收到canal发送过来的dump请求，开始推送binary log给canal，然后canal解析binary log，再发送到存储目的地，比如MySQL，Kafka，Elastic Search等等。</p></li></ol><h4 id="2-Spring事务失效"><a href="#2-Spring事务失效" class="headerlink" title="2. Spring事务失效"></a>2. Spring事务失效</h4><p><strong>背景</strong>：在上传、合并媒资文件时，发现上传时比较慢，因为时本地搭建的MinIO（不会出现慢或者宕机的情况），然后就去找代码原因，发现原先的做法是将上传与入库放在一整个事务中，而且入库部分代码重复了（上传与合并都需要将信息入库），所以就将入库部分代码提取出来，且因为上传功能实现了断点续传，所以上传部分不需要开启事务，只需要入库时开启事务。但后面进行测试的时候（分为三点，手动抛异常），出现了入库事务失效。后面上网搜、问chat，发现是Spring事务失效。</p><p><strong>原因</strong>：调用自身方法时，采用的不是代理对象，导致事务失效。</p><p><strong>原理</strong>：Spring的事务是基于AOP实现的，原理就是动态代理，在代理对象的外部进行增强等操作。</p>]]></content>
+      
+      
+      
+    </entry>
+    
+    
+    
+    <entry>
+      <title>Hello World</title>
+      <link href="/2023/12/02/hello-world/"/>
+      <url>/2023/12/02/hello-world/</url>
+      
+        <content type="html"><![CDATA[<p>Welcome to <a href="https://hexo.io/">Hexo</a>! This is your very first post. Check <a href="https://hexo.io/docs/">documentation</a> for more info. If you get any problems when using Hexo, you can find the answer in <a href="https://hexo.io/docs/troubleshooting.html">troubleshooting</a> or you can ask me on <a href="https://github.com/hexojs/hexo/issues">GitHub</a>.</p><h2 id="Quick-Start"><a href="#Quick-Start" class="headerlink" title="Quick Start"></a>Quick Start</h2><h3 id="Create-a-new-post"><a href="#Create-a-new-post" class="headerlink" title="Create a new post"></a>Create a new post</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">$ hexo new <span class="string">&quot;My New Post&quot;</span></span><br></pre></td></tr></table></figure><p>More info: <a href="https://hexo.io/docs/writing.html">Writing</a></p><h3 id="Run-server"><a href="#Run-server" class="headerlink" title="Run server"></a>Run server</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">$ hexo server</span><br></pre></td></tr></table></figure><p>More info: <a href="https://hexo.io/docs/server.html">Server</a></p><h3 id="Generate-static-files"><a href="#Generate-static-files" class="headerlink" title="Generate static files"></a>Generate static files</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">$ hexo generate</span><br></pre></td></tr></table></figure><p>More info: <a href="https://hexo.io/docs/generating.html">Generating</a></p><h3 id="Deploy-to-remote-sites"><a href="#Deploy-to-remote-sites" class="headerlink" title="Deploy to remote sites"></a>Deploy to remote sites</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">$ hexo deploy</span><br></pre></td></tr></table></figure><p>More info: <a href="https://hexo.io/docs/one-command-deployment.html">Deployment</a></p>]]></content>
+      
+      
+      
+    </entry>
+    
+    
+  
+  
+</search>
